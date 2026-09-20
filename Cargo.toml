@@ -10,7 +10,7 @@ dotenvy = "0.15.7"
 futures = "0.3.34"
 redis = { version = "1.7.0", features = ["tokio-comp", "connection-manager"] }
 sqlx = { version = "0.9.0", features = ["runtime-tokio", "postgres"] }
-tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "signal"] }
 tower-http = { version = "0.7.1", features = ["cors", "trace"] }
 tracing = { version = "0.1.44", features = ["log"] }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

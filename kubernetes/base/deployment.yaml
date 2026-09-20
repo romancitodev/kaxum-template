@@ -4,6 +4,11 @@ metadata:
   name: api
 spec:
   replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app.kubernetes.io/name: api
@@ -12,6 +17,22 @@ spec:
       labels:
         app.kubernetes.io/name: api
     spec:
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          nodeTaintsPolicy: Honor
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: api
+          matchLabelKeys:
+            - pod-template-hash
       containers:
         - name: api
           image: axum-api:dev
@@ -24,6 +45,21 @@ spec:
                 name: api-config
             - secretRef:
                 name: api-secrets
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
           startupProbe:
             httpGet:
               path: /health/startup
