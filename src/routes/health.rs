@@ -23,7 +23,7 @@ async fn live() -> StatusCode {
   StatusCode::OK
 }
 
-/// La inicialización terminó. `AppState::init` corre antes de abrir el puerto,
+/// La inicialización terminó. `App::new` corre antes de abrir el puerto,
 /// así que si este handler responde, la app ya arrancó.
 async fn startup() -> StatusCode {
   StatusCode::OK

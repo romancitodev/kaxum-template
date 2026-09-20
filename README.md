@@ -9,10 +9,14 @@ Por ahora solo expone los endpoints de salud; sirve de base para construir el re
 | Pieza | Qué hace |
 |-------|----------|
 | `src/main.rs` | Arranca el servidor, CORS abierto, trazas HTTP y apagado ordenado (Ctrl+C / SIGTERM). |
-| `src/app.rs` | Estado compartido: pool de Postgres (`sqlx`) y conexión a Redis. |
+| `src/config.rs` | Lee las variables de entorno en un solo lugar (`Config::from_env`). |
+| `src/error.rs` | `AppError`: los handlers devuelven `Result<_, AppError>` y pueden usar `?` con cualquier error (500 con log) o `AppError::BadRequest` (400). |
+| `src/app.rs` | Estado compartido: pool de Postgres (`sqlx`), conexión a Redis y migraciones al arrancar. |
 | `src/routes/health.rs` | `GET /health/live`, `/health/ready` y `/health/startup`. |
+| `src/routes/example.rs` | Ruta de ejemplo `GET /api/example/{name}` con sus tests. Copiarla como punto de partida y borrarla. |
 | `src/monitor/redis.rs` | Heartbeat en background (PING cada 5 s) que guarda si Redis está arriba o caído. |
-| `sql/seed.sql` | Datos de ejemplo. |
+| `migrations/` | Migraciones de sqlx (`<timestamp>_<nombre>.sql`). La API las aplica al arrancar; `build.rs` hace que cargo las detecte. |
+| `sql/seed.sql` | Datos de ejemplo del zoológico (borrar en un proyecto nuevo). |
 | `docker/` | `compose.yaml` (solo Drizzle Gateway, para ver la DB) y `full.compose.yaml` (Postgres + Redis + Drizzle Gateway). |
 | `kubernetes/base/` | Manifiestos de la API: namespace, configmap, deployment, service, PDB y HPA. |
 | `kubernetes/dev/` | Extras solo para desarrollo: Postgres, Redis, secret, NodePort y parche de metrics-server. |
@@ -25,11 +29,17 @@ Por ahora solo expone los endpoints de salud; sirve de base para construir el re
 
 ### Variables de entorno (`.env`)
 
-`DATABASE_URL`, `REDIS_URL`, `BIND_ADDR` y `RUST_LOG`.
+`cp .env.example .env` y cambiar las contraseñas. Es la única fuente de credenciales: las lee el justfile, el compose (`--env-file`) y la API, y `just k8s-secrets` arma con ellas los secrets del clúster.
+
+- `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` y `MASTERPASS` (Drizzle Gateway): obligatorias. Sin ellas `just up` falla con un mensaje.
+- `DATABASE_URL` y `REDIS_URL`: obligatorias para correr la API en local.
+- `BIND_ADDR` (por defecto `0.0.0.0:3000`) y `RUST_LOG`: opcionales.
+
+Postgres toma la contraseña solo al crear su data. Si la cambiás después, no se aplica sola: hay que borrar la data (`just down` en local, `just k8s-wipe-data` en el clúster) o cambiarla con `ALTER USER`.
 
 ## Justfile
 
-Requiere [`just`](https://github.com/casey/just) y `nu` (nushell) como shell. Con `just` a secas se listan las recetas agrupadas (los grupos de abajo son los mismos que muestra la lista).
+Requiere [`just`](https://github.com/casey/just) y `nu` (nushell) como shell. El nombre del proyecto (clúster de kind, proyecto de compose y carpeta de data) sale del `name` de `Cargo.toml`. Con `just` a secas se listan las recetas agrupadas (los grupos de abajo son los mismos que muestra la lista).
 
 - Las recetas marcadas con ⚠ piden confirmación antes de correr. `just --yes <receta>` la omite.
 - Alias: `ship` (`k8s-ship`), `logs` (`k8s-logs`) y `status` (`k8s-status`).
@@ -43,7 +53,8 @@ Requiere [`just`](https://github.com/casey/just) y `nu` (nushell) como shell. Co
 | `up` | Levanta el docker compose (Postgres, Redis y Drizzle Gateway). |
 | `down` ⚠ | Baja el docker compose y borra sus volúmenes. |
 | `run` | Corre la API en local con `cargo pretty run`. |
-| `build-docker` | Construye la imagen `axum-api:dev`. |
+| `test` | Corre los tests (`cargo test`). |
+| `build-docker` | Construye la imagen `api:dev`. |
 
 ### `k8s`
 
@@ -51,10 +62,11 @@ Requiere [`just`](https://github.com/casey/just) y `nu` (nushell) como shell. Co
 |--------|----------|
 | `k8s-up` | Levanta todo desde cero en kind (el clúster no debe existir). |
 | `k8s-cluster` | Crea el clúster kind (1 control-plane + 3 workers). |
-| `k8s-namespace` | Crea el namespace `axum-api` y lo deja por defecto. |
+| `k8s-namespace` | Crea el namespace `app` y lo deja por defecto. |
 | `k8s-image` | Construye la imagen y la carga en los nodos de kind. |
 | `k8s-metrics` | Instala metrics-server (lo necesita el HPA). |
-| `k8s-data` | Despliega Postgres, Redis y el secret de dev. |
+| `k8s-secrets` | Crea o actualiza los secrets del clúster desde `.env` (contraseñas de Postgres y `DATABASE_URL` de la API). |
+| `k8s-data` | Despliega Postgres y Redis (corre `k8s-secrets` antes). |
 | `k8s-api` | Despliega la API: configmap, deployment, service, PDB, HPA y NodePort. |
 | `k8s-redeploy` | Reconstruye la imagen y reinicia la API (ciclo de desarrollo). |
 | `k8s-ship` | `k8s-redeploy` + `health`: actualiza la API y la prueba. |
@@ -78,6 +90,7 @@ Requiere [`just`](https://github.com/casey/just) y `nu` (nushell) como shell. Co
 
 | Receta | Qué hace |
 |--------|----------|
+| `db-new <nombre>` | Crea una migración vacía en `migrations/`, ej. `just db-new crear_usuarios`. La API la aplica al arrancar. |
 | `db-dump` | Vuelca el Postgres del compose local a `.data/dump.sql`. |
 | `db-restore` ⚠ | Carga `.data/dump.sql` en el Postgres del clúster (reemplaza las tablas del dump). Se puede repetir. |
 
@@ -98,11 +111,11 @@ Requiere [`just`](https://github.com/casey/just) y `nu` (nushell) como shell. Co
 
 ## Persistencia de Postgres en el clúster
 
-La data vive en `/var/lib/kind-pg`, dentro de la VM de Docker, montada en el worker con la etiqueta `data=pg` (ver `kubernetes/kind.config.yaml`). Por eso sobrevive a `k8s-clean`, `k8s-destroy` y a recrear el clúster. Solo `just k8s-wipe-data` la borra.
+La data vive en `/var/lib/kind-<proyecto>-pg`, dentro de la VM de Docker, montada en el worker con la etiqueta `data=pg` (ver `kubernetes/kind.config.yaml`). Por eso sobrevive a `k8s-clean`, `k8s-destroy` y a recrear el clúster. Solo `just k8s-wipe-data` la borra.
 
 No se usa una carpeta de Windows (`L:\...`) porque Postgres falla ahí con `Permission denied` en `pg_wal`.
 
-Un clúster creado antes de este cambio no tiene el montaje ni la etiqueta: hay que hacer `just k8s-destroy` y `just k8s-up` una vez.
+Un clúster creado antes de este cambio no tiene el montaje, la etiqueta ni los nombres nuevos: hay que borrarlo (`kind delete cluster --name axum`) y hacer `just k8s-up` una vez.
 
 ## Flujo de trabajo
 
@@ -111,6 +124,8 @@ Dos entornos: **local** (la API corre con `cargo` contra el compose) y **clúste
 ### Primera vez
 
 ```
+cp .env.example .env
+just doctor      # ¿están instaladas las herramientas?
 just up          # Postgres, Redis y Drizzle Gateway en Docker
 just k8s-up      # clúster completo en kind
 ```
@@ -124,6 +139,7 @@ just k8s-up      # clúster completo en kind
 | Lo mismo pero sin la prueba | `just k8s-redeploy`. |
 | Cambié un manifiesto de la API (deployment, HPA, configmap…) | `just k8s-api`. |
 | Cambié Postgres, Redis o el secret | `just k8s-data`. |
+| Necesito una tabla o un cambio de esquema | `just db-new <nombre>`, escribir el SQL en el archivo creado y reiniciar la API (`just run` o `just ship`). |
 | Quiero llevar mi data local al clúster | `just db-dump` y después `just db-restore`. |
 | Quiero ver la DB del clúster con Drizzle Gateway | `just k8s-pg` y conectar a `localhost:5433`. |
 | Algo falla en el clúster | `just status`, `just logs` (o `just logs postgres`), o `just k9`. |
@@ -132,3 +148,11 @@ just k8s-up      # clúster completo en kind
 | Probar que Postgres es obligatorio | `just k8s-scale postgres 0` y `just health`: responde 503. |
 | Terminé por hoy | `just down` y `just k8s-destroy` (piden confirmación). La data del clúster queda. |
 | Quiero empezar con la DB del clúster vacía | `just k8s-wipe-data`, y después `just k8s-data`. |
+
+## Usar como template
+
+1. Cambiar el `name` en `Cargo.toml` y correr `cargo check` (actualiza `Cargo.lock`). El justfile, el clúster, el compose y la carpeta de data siguen ese nombre solos.
+2. Borrar `sql/seed.sql` y escribir el esquema propio con `just db-new`.
+3. Cambiar las contraseñas en `.env` y borrar `src/routes/example.rs` cuando ya tengas rutas propias.
+
+El puerto `8080` del host (en `kubernetes/kind.config.yaml` y `url` del justfile) es fijo: dos clústeres de proyectos distintos no pueden estar arriba a la vez.

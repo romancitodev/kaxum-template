@@ -8,9 +8,13 @@ anyhow = "1.0.104"
 axum = {version = "0.8.9", features = ["macros"]}
 dotenvy = "0.15.7"
 futures = "0.3.34"
+serde = { version = "1.0.229", features = ["derive"] }
 redis = { version = "1.7.0", features = ["tokio-comp", "connection-manager"] }
-sqlx = { version = "0.9.0", features = ["runtime-tokio", "postgres"] }
+sqlx = { version = "0.9.0", features = ["runtime-tokio", "postgres", "migrate", "macros"] }
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "signal"] }
 tower-http = { version = "0.7.1", features = ["cors", "trace"] }
 tracing = { version = "0.1.44", features = ["log"] }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[dev-dependencies]
+tower = { version = "0.5.3", features = ["util"] }

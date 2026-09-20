@@ -34,7 +34,7 @@ spec:
             - pod-template-hash
       containers:
         - name: api
-          image: axum-api:dev
+          image: api:dev
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

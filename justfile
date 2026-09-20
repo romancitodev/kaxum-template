@@ -2,10 +2,13 @@ set shell := ["nu", "-c"]
 set dotenv-load := true
 set dotenv-filename := ".env"
 
-cluster := "axum"
-ns      := "axum-api"
-image   := "axum-api:dev"
+# Única fuente del nombre: el `name` de Cargo.toml. Para otro proyecto alcanza con cambiarlo ahí.
+project := `open Cargo.toml | get package.name`
+cluster := project
+ns      := "app"
+image   := "api:dev"
 k8s     := "kubernetes"
+compose := "docker compose -p " + project + " --env-file .env -f docker/full.compose.yaml"
 # 127.0.0.1 y no localhost: en Windows localhost puede resolver primero a IPv6 y demorar.
 url     := "http://127.0.0.1:8080"
 
@@ -28,17 +31,22 @@ doctor:
 # Postgres, Redis y Drizzle Gateway en Docker
 [group('local')]
 up:
-  docker compose -f docker/full.compose.yaml up -d
+  {{compose}} up -d
 
 # Baja el compose y borra sus volúmenes
 [group('local'), confirm('Esto borra los volúmenes del compose (Postgres y Redis locales). ¿Seguir?')]
 down:
-  docker compose -f docker/full.compose.yaml down -v
+  {{compose}} down -v
 
 # Corre la API en local contra el compose
 [group('local')]
 run:
   cargo pretty run
+
+# Corre los tests de la API
+[group('local')]
+test:
+  cargo test
 
 # Construye la imagen de la API
 [group('local')]
@@ -54,7 +62,7 @@ k8s-up: k8s-cluster k8s-namespace k8s-image k8s-metrics k8s-data k8s-api
 # Crea el clúster de kind (1 control-plane + 3 workers)
 [group('k8s')]
 k8s-cluster:
-  kind create cluster --name {{cluster}} --config {{k8s}}/kind.config.yaml
+  open --raw {{k8s}}/kind.config.yaml | str replace --all '__PROJECT__' '{{project}}' | kind create cluster --name {{cluster}} --config -
 
 # Crea el namespace y lo deja como default del contexto actual
 [group('k8s')]
@@ -74,10 +82,16 @@ k8s-metrics:
   kubectl patch deployment metrics-server -n kube-system --type=json --patch-file {{k8s}}/dev/metrics-server-patch.json
   kubectl rollout status deployment/metrics-server -n kube-system
 
-# Postgres, Redis y credenciales de desarrollo
+# Crea (o actualiza) los secrets del clúster a partir de .env: no hay contraseñas en los manifiestos
 [group('k8s')]
-k8s-data:
-  kubectl apply -n {{ns}} -f {{k8s}}/dev/secret.yaml -f {{k8s}}/dev/postgres.yaml -f {{k8s}}/dev/redis.yaml
+k8s-secrets:
+  kubectl create secret generic postgres-credentials -n {{ns}} $"--from-literal=POSTGRES_USER=($env.POSTGRES_USER)" $"--from-literal=POSTGRES_PASSWORD=($env.POSTGRES_PASSWORD)" $"--from-literal=POSTGRES_DB=($env.POSTGRES_DB)" --dry-run=client -o yaml | kubectl apply -f -
+  kubectl create secret generic api-secrets -n {{ns}} $"--from-literal=DATABASE_URL=postgres://($env.POSTGRES_USER):($env.POSTGRES_PASSWORD)@postgres:5432/($env.POSTGRES_DB)" --from-literal=REDIS_URL=redis://redis:6379 --dry-run=client -o yaml | kubectl apply -f -
+
+# Postgres y Redis (los secrets salen de `k8s-secrets`)
+[group('k8s')]
+k8s-data: k8s-secrets
+  kubectl apply -n {{ns}} -f {{k8s}}/dev/postgres.yaml -f {{k8s}}/dev/redis.yaml
 
 # La API: config, deployment, service, PDB, HPA y el NodePort de dev
 [group('k8s')]
@@ -113,7 +127,7 @@ k8s-destroy:
 [group('k8s'), confirm('Esto BORRA PARA SIEMPRE la data de Postgres del clúster. ¿Seguir?')]
 k8s-wipe-data:
   kubectl delete deployment/postgres -n {{ns}} --ignore-not-found
-  docker run --rm --entrypoint sh -v /var/lib/kind-pg:/d postgres:alpine3.24 -c 'rm -rf /d/*'
+  docker run --rm --entrypoint sh -v /var/lib/kind-{{project}}-pg:/d postgres:alpine3.24 -c 'rm -rf /d/*'
 
 # ─── inspeccion ─────────────────────────────────────────────────────────────
 
@@ -149,28 +163,33 @@ k9:
 
 # ─── datos ──────────────────────────────────────────────────────────────────
 
+# Crea una migración vacía en migrations/: `just db-new crear_usuarios`. La API las aplica al arrancar.
+[group('datos')]
+db-new name:
+  "" | save $"migrations/(date now | format date '%Y%m%d%H%M%S')_{{name}}.sql"
+
 # Vuelca la DB del compose local a .data/dump.sql
 [group('datos')]
 db-dump:
   mkdir .data
-  docker exec axum-postgres pg_dump -U postgres --clean --if-exists app | save -f .data/dump.sql
+  {{compose}} exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" --clean --if-exists "$POSTGRES_DB"' | save -f .data/dump.sql
 
 # Carga .data/dump.sql en el Postgres del clúster (reemplaza las tablas del dump)
 [group('datos'), confirm('Esto reemplaza las tablas del Postgres del clúster con las del dump. ¿Seguir?')]
 db-restore:
-  open --raw .data/dump.sql | kubectl exec -i -n {{ns}} deploy/postgres -- psql -U postgres -d app
+  open --raw .data/dump.sql | kubectl exec -i -n {{ns}} deploy/postgres -- sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 
 # ─── tuneles ────────────────────────────────────────────────────────────────
 
 # Postgres del clúster en localhost:5433 (para el gateway de Drizzle)
 [group('tuneles')]
 k8s-pg:
-  kubectl port-forward -n {{ns}} svc/postgres 5433:5432
+  kubectl port-forward -n {{ns}} svc/postgres 5432:5432
 
 # Redis del clúster en localhost:6380
 [group('tuneles')]
 k8s-redis:
-  kubectl port-forward -n {{ns}} svc/redis 6380:6379
+  kubectl port-forward -n {{ns}} svc/redis 6379:6379
 
 # ─── pruebas ────────────────────────────────────────────────────────────────
 

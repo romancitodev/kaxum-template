@@ -1,4 +1,6 @@
 mod app;
+mod config;
+mod error;
 mod monitor;
 mod routes;
 
@@ -11,16 +13,16 @@ use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tower_http::{cors::CorsLayer, trace};
 
-use crate::app::App;
+use crate::{app::App, config::Config};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-  tracing::debug!("ℹ️ | Starting server...");
-  tracing::debug!("ℹ️ | Loading environment variables...");
   dotenvy::dotenv().ok();
   tracing_subscriber::fmt::init();
 
-  let app = App::new()
+  tracing::debug!("ℹ️ | Starting server...");
+  let config = Config::from_env()?;
+  let app = App::new(&config)
     .await
     .expect("Error while initializing the app config");
 
@@ -29,19 +31,18 @@ async fn main() -> anyhow::Result<()> {
 
   let app = Router::new()
     .merge(routes::health::router())
+    .merge(routes::example::router())
     .layer(trace::TraceLayer::new_for_http())
     .layer(CorsLayer::permissive())
     .with_state(app);
-  setup(app).await.expect("Failed to start server");
+  setup(app, config.bind_addr)
+    .await
+    .expect("Failed to start server");
 
   Ok(())
 }
 
-fn setup(app: Router) -> impl Future<Output = std::io::Result<()>> {
-  let addr = std::env::var("BIND_ADDR").expect("BIND_ADDR must be set");
-  let address = addr
-    .parse::<SocketAddr>()
-    .expect("BIND_ADDR must be a valid socket address");
+fn setup(app: Router, address: SocketAddr) -> impl Future<Output = std::io::Result<()>> {
   TcpListener::bind(address)
     .map(|bind| bind.expect("Failed to bind to address"))
     .then(move |listener| {

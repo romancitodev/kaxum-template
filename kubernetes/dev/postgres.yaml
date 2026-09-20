@@ -22,19 +22,15 @@ spec:
           ports:
             - name: pg
               containerPort: 5432
-          env:
-            - name: POSTGRES_USER
-              value: postgres
-            - name: POSTGRES_PASSWORD
-              value: postgres # TODO: CHANGE ME!!!
-            - name: POSTGRES_DB
-              value: app
+          envFrom:
+            - secretRef:
+                name: postgres-credentials # lo crea `just k8s-secrets` desde .env
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql # without /data because of the new versions.
           readinessProbe:
             exec:
-              command: ["pg_isready", "-U", "postgres", "-d", "app"] # hardcoded for now, but can be changed to env variables if needed.
+              command: ["sh", "-c", 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"']
             periodSeconds: 5
       volumes:
         - name: data

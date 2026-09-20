@@ -1,6 +1,5 @@
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
-name: axum
 nodes:
   - role: control-plane
     extraPortMappings:
@@ -9,12 +8,13 @@ nodes:
         protocol: TCP
   # Este worker guarda la data de Postgres. La ruta vive en la VM de Docker (ext4),
   # no en Windows: sobre L:\ Postgres falla con "Permission denied" en pg_wal.
-  # Sobrevive a `kind delete cluster`.
+  # Sobrevive a `kind delete cluster`. El justfile reemplaza __PROJECT__ por el nombre del
+  # paquete de Cargo.toml (y pasa este archivo por stdin), así cada proyecto tiene su propia data.
   - role: worker
     labels:
       data: pg
     extraMounts:
-      - hostPath: /var/lib/kind-pg
+      - hostPath: /var/lib/kind-__PROJECT__-pg
         containerPath: /data/pg
   - role: worker
   - role: worker
