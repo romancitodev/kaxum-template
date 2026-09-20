@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-config
+data:
+  BIND_ADDR: "0.0.0.0:3000"
+  RUST_LOG: "info"

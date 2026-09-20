@@ -1,0 +1,15 @@
+services:
+  postgres-ui:
+    image: ghcr.io/drizzle-team/gateway:latest
+    container_name: axum-drizzle
+    restart: unless-stopped
+    ports:
+      - "4983:4983"
+    environment:
+      MASTERPASS: ${MASTERPASS:-change-me}
+      DATABASE_URL_app: "postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@host.docker.internal:5432/${POSTGRES_DB:-app}"
+    volumes:
+      - drizzle-data:/app
+
+volumes:
+  drizzle-data:
