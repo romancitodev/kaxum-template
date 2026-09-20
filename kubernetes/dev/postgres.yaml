@@ -14,6 +14,8 @@ spec:
       labels:
         app.kubernetes.io/name: postgres
     spec:
+      nodeSelector:
+        data: pg # el worker que tiene montado /data/pg (ver kind.config.yaml)
       containers:
         - name: postgres
           image: postgres:alpine3.24
@@ -36,7 +38,9 @@ spec:
             periodSeconds: 5
       volumes:
         - name: data
-          emptyDir: {}
+          hostPath:
+            path: /data/pg
+            type: DirectoryOrCreate
 ---
 apiVersion: v1
 kind: Service

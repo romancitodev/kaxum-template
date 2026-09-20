@@ -71,8 +71,8 @@ async fn shutdown() {
   let terminate = std::future::pending::<()>();
 
   tokio::select! {
-      _ = ctrl_c => {},
-      _ = terminate => {},
+      () = ctrl_c => {},
+      () = terminate => {},
   }
 
   tracing::info!("shutdown signal received, draining connections");

@@ -7,6 +7,14 @@ nodes:
       - containerPort: 30080
         hostPort: 8080
         protocol: TCP
+  # Este worker guarda la data de Postgres. La ruta vive en la VM de Docker (ext4),
+  # no en Windows: sobre L:\ Postgres falla con "Permission denied" en pg_wal.
+  # Sobrevive a `kind delete cluster`.
   - role: worker
+    labels:
+      data: pg
+    extraMounts:
+      - hostPath: /var/lib/kind-pg
+        containerPath: /data/pg
   - role: worker
   - role: worker
