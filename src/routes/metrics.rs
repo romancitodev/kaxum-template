@@ -49,6 +49,10 @@ pub fn install() -> anyhow::Result<PrometheusHandle> {
     "redis_heartbeat_failures_total",
     "Numero de fallos en el heartbeat de redis"
   );
+  describe_counter!(
+    "cache_lookups_total",
+    "Resultados de la busqueda en la cache de Redis (hit/miss)"
+  );
   Ok(handle)
 }
 

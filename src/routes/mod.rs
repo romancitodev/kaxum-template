@@ -1,3 +1,4 @@
+pub mod animal;
 pub mod example;
 pub mod health;
 #[cfg(feature = "metrics")]

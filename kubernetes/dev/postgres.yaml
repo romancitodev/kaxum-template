@@ -19,6 +19,9 @@ spec:
       containers:
         - name: postgres
           image: postgres:alpine3.24
+          # default (100) queda justo con 10 réplicas de la API a 10 conexiones
+          # cada una (ver `App::new` en src/app.rs): un poco de margen.
+          args: ["-c", "max_connections=300"]
           ports:
             - name: pg
               containerPort: 5432

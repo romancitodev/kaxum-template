@@ -2,11 +2,10 @@ mod app;
 mod config;
 mod error;
 mod monitor;
+mod ratelimit;
 mod routes;
 
-use axum::Router;
-#[cfg(feature = "metrics")]
-use axum::middleware;
+use axum::{Router, middleware};
 use futures::FutureExt;
 use tokio::signal;
 
@@ -38,8 +37,15 @@ async fn main() -> anyhow::Result<()> {
   tracing::info!("ℹ️ | Starting server...");
 
   let router = Router::new()
-    .merge(routes::health::router())
-    .merge(routes::example::router());
+    .merge(
+      routes::health::router()
+        .layer(middleware::from_fn_with_state(app.clone(), ratelimit::limit)),
+    )
+    .merge(routes::example::router())
+    .merge(
+      routes::animal::router()
+        .layer(middleware::from_fn_with_state(app.clone(), ratelimit::limit)),
+    );
 
   #[cfg(feature = "metrics")]
   let router = router.layer(middleware::from_fn(metrics::track));
@@ -49,7 +55,7 @@ async fn main() -> anyhow::Result<()> {
     .layer(CorsLayer::permissive())
     .with_state(app);
 
-  let app_handle = setup(app, config.bind_addr);
+  let app_handle = setup_with_connect_info(app, config.bind_addr);
 
   #[cfg(feature = "metrics")]
   let metrics_handle = setup(metrics_app, config.metrics_addr);
@@ -63,6 +69,7 @@ async fn main() -> anyhow::Result<()> {
   Ok(())
 }
 
+#[cfg(feature = "metrics")]
 fn setup(app: Router, address: SocketAddr) -> impl Future<Output = std::io::Result<()>> {
   TcpListener::bind(address)
     .map(|bind| bind.expect("Failed to bind to address"))
@@ -71,6 +78,28 @@ fn setup(app: Router, address: SocketAddr) -> impl Future<Output = std::io::Resu
       axum::serve(listener, app)
         .with_graceful_shutdown(shutdown())
         .into_future()
+    })
+}
+
+/// Igual que `setup`, pero exponiendo la IP real del socket vía `ConnectInfo`
+/// (la necesita `ratelimit::limit` para no compartir balde entre clientes).
+/// Duplicado a mano en vez de hacer `setup` genérico: el bound de tipos que
+/// pide `axum::serve` para `IntoMakeServiceWithConnectInfo` no vale la pena
+/// pelearlo por una función que se usa una sola vez.
+fn setup_with_connect_info(
+  app: Router,
+  address: SocketAddr,
+) -> impl Future<Output = std::io::Result<()>> {
+  TcpListener::bind(address)
+    .map(|bind| bind.expect("Failed to bind to address"))
+    .then(move |listener| {
+      tracing::info!("ℹ️ | Server listening on {address}");
+      axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+      )
+      .with_graceful_shutdown(shutdown())
+      .into_future()
     })
 }
 
