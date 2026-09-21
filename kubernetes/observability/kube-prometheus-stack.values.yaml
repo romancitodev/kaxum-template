@@ -1,0 +1,41 @@
+# kube-prometheus-stack: valores para desarrollo local en kind.
+# Solo lo que difiere del chart; cada bloque dice qué habilita o qué evita.
+
+# Nombres cortos: el Service de Prometheus queda como `kps-prometheus`.
+fullnameOverride: kps
+
+grafana:
+  fullnameOverride: grafana # Service `grafana` (puerto 80)
+  adminPassword: admin # SOLO desarrollo
+  defaultDashboardsTimezone: browser # por defecto es utc
+
+prometheus:
+  prometheusSpec:
+    retention: 12h # por defecto 10d; para aprender alcanza y ocupa menos
+    # Por defecto Prometheus solo toma ServiceMonitors, PodMonitors y reglas que
+    # lleven la etiqueta `release: kps`. Con `false` toma los de cualquier
+    # namespace, así los de tu API (namespace `app`) se descubren sin etiquetas.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+
+# Se activa cuando lleguemos a las alertas (paso 3).
+alertmanager:
+  enabled: false
+
+# En kind estos componentes suelen escuchar solo en 127.0.0.1 dentro del nodo,
+# así que Prometheus no los alcanza: targets "down" y alertas falsas.
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeProxy:
+  enabled: false
+
+# En Docker Desktop el montaje de / del nodo con propagación suele fallar y el
+# pod de node-exporter no arranca.
+prometheus-node-exporter:
+  hostRootFsMount:
+    enabled: false

@@ -12,6 +12,9 @@ compose := "docker compose -p " + project + " --env-file .env -f docker/compose.
 # 127.0.0.1 y no localhost: en Windows localhost puede resolver primero a IPv6 y demorar.
 url     := "http://127.0.0.1:8080"
 
+obs_ns     := "monitoring"
+obs_values := k8s + "/observability/kube-prometheus-stack.values.yaml"
+
 alias ship   := k8s-ship
 alias logs   := k8s-logs
 alias status := k8s-status
@@ -26,7 +29,7 @@ default:
 # Verifica que estén instaladas las herramientas que usa este justfile
 [group('local')]
 doctor:
-  ["docker" "kind" "kubectl" "cargo" "oha" "k9s" "curl"] | each {|t| {tool: $t, ok: (which $t | is-not-empty)} }
+  ["docker" "kind" "kubectl" "helm" "cargo" "oha" "k9s" "curl"] | each {|t| {tool: $t, ok: (which $t | is-not-empty)} }
 
 # Postgres, Redis, Drizzle Gateway y el diagrama ER en Docker
 [group('local')]
@@ -186,6 +189,33 @@ k8s-hpa:
 [group('inspeccion')]
 k9:
   k9s -n {{ns}}
+
+# ─── observabilidad ─────────────────────────────────────────────────────────
+
+# Instala (o actualiza) Prometheus + Grafana en el namespace `monitoring`. Tarda varios minutos la primera vez.
+[group('obs')]
+obs-up:
+  helm upgrade --install kps oci://ghcr.io/prometheus-community/charts/kube-prometheus-stack --kube-context kind-{{cluster}} --namespace {{obs_ns}} --create-namespace --values {{obs_values}} --wait --timeout 10m
+
+# Grafana en http://127.0.0.1:3000 (admin / admin)
+[group('obs')]
+obs-grafana:
+  kubectl --context kind-{{cluster}} port-forward -n {{obs_ns}} svc/grafana 3000:80
+
+# Prometheus en http://127.0.0.1:9090
+[group('obs')]
+obs-prometheus:
+  kubectl --context kind-{{cluster}} port-forward -n {{obs_ns}} svc/kps-prometheus 9090:9090
+
+# Estado del stack
+[group('obs')]
+obs-status:
+  kubectl --context kind-{{cluster}} get pods -n {{obs_ns}}
+
+# Desinstala el stack. Los CRDs de Prometheus Operator quedan en el clúster.
+[group('obs'), confirm('Esto desinstala Prometheus y Grafana (los datos guardados se pierden). ¿Seguir?')]
+obs-down:
+  helm uninstall kps --kube-context kind-{{cluster}} --namespace {{obs_ns}}
 
 # ─── datos ──────────────────────────────────────────────────────────────────
 
