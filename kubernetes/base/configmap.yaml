@@ -5,3 +5,4 @@ metadata:
 data:
   BIND_ADDR: "0.0.0.0:3000"
   RUST_LOG: "info"
+  METRICS_ADDR: "0.0.0.0:9090"

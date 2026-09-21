@@ -113,7 +113,9 @@ k8s-check:
 
 # Reconstruye la imagen, la carga y reinicia la API (ciclo de desarrollo)
 [group('k8s')]
-k8s-redeploy: k8s-image k8s-restart
+k8s-redeploy: k8s-image
+  kubectl rollout restart deployment/api -n {{ns}}
+  kubectl rollout status deployment/api -n {{ns}}
 
 # Reinicia la API sin reconstruir la imagen (por ejemplo, tras cambiar los secrets con `k8s-secrets`)
 [group('k8s')]
@@ -211,6 +213,16 @@ obs-prometheus:
 [group('obs')]
 obs-status:
   kubectl --context kind-{{cluster}} get pods -n {{obs_ns}}
+
+# Registra la API en Prometheus (PodMonitor). Necesita `obs-up` y `k8s-apply` hechos: el CRD y el namespace tienen que existir.
+[group('obs')]
+obs-podmonitor:
+  kubectl --context kind-{{cluster}} apply -f {{k8s}}/observability/api-podmonitor.yaml
+
+# /metrics de un pod de la API en http://127.0.0.1:9091/metrics
+[group('obs')]
+api-metrics:
+  kubectl --context kind-{{cluster}} port-forward -n {{ns}} deploy/api 9091:9090
 
 # Desinstala el stack. Los CRDs de Prometheus Operator quedan en el clúster.
 [group('obs'), confirm('Esto desinstala Prometheus y Grafana (los datos guardados se pierden). ¿Seguir?')]

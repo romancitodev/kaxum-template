@@ -8,7 +8,7 @@ COPY src ./src
 # `cargo install` deja el binario con el nombre del paquete, así no hay que repetirlo acá.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
-    cargo install --path . --locked --root /out --target-dir /app/target && cp /out/bin/* /server
+    cargo install --features metrics --path . --locked --root /out --target-dir /app/target && cp /out/bin/* /server
 
 FROM gcr.io/distroless/cc-debian12:nonroot
 COPY --from=builder /server /server
