@@ -64,3 +64,25 @@ async fn ready(
     ),
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use tokio::time::Instant;
+
+  use super::*;
+
+  // Ejemplo de test con Postgres real: `#[sqlx::test]` crea una base temporal a partir de
+  // DATABASE_URL, le aplica `migrations/`, te pasa el pool y la borra al terminar.
+  #[sqlx::test]
+  async fn ready_with_postgres_up(pool: PgPool) {
+    let (_tx, rx) = watch::channel(RedisInfo {
+      status: RedisStatus::Up,
+      last_heartbeat: Instant::now(),
+    });
+
+    let (status, body) = ready(State(pool), State(rx)).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, "ready");
+  }
+}

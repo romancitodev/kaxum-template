@@ -8,7 +8,7 @@ cluster := project
 ns      := "app"
 image   := "api:dev"
 k8s     := "kubernetes"
-compose := "docker compose -p " + project + " --env-file .env -f docker/full.compose.yaml"
+compose := "docker compose -p " + project + " --env-file .env -f docker/compose.yaml"
 # 127.0.0.1 y no localhost: en Windows localhost puede resolver primero a IPv6 y demorar.
 url     := "http://127.0.0.1:8080"
 
@@ -28,10 +28,15 @@ default:
 doctor:
   ["docker" "kind" "kubectl" "cargo" "oha" "k9s" "curl"] | each {|t| {tool: $t, ok: (which $t | is-not-empty)} }
 
-# Postgres, Redis y Drizzle Gateway en Docker
+# Postgres, Redis, Drizzle Gateway y el diagrama ER en Docker
 [group('local')]
 up:
   {{compose}} up -d
+
+# Pausa el compose sin borrar nada (se retoma con `just up`)
+[group('local')]
+stop:
+  {{compose}} stop
 
 # Baja el compose y borra sus volúmenes
 [group('local'), confirm('Esto borra los volúmenes del compose (Postgres y Redis locales). ¿Seguir?')]
@@ -43,10 +48,10 @@ down:
 run:
   cargo pretty run
 
-# Corre los tests de la API
+# Corre los tests. Los que usan Postgres necesitan `just up`; corren en bases temporales, no tocan la tuya.
 [group('local')]
 test:
-  cargo test
+  with-env {DATABASE_URL: $"postgres://($env.POSTGRES_USER):($env.POSTGRES_PASSWORD)@localhost:5432/postgres"} { cargo test }
 
 # Construye la imagen de la API
 [group('local')]
@@ -113,6 +118,18 @@ k8s-ship: k8s-redeploy health
 k8s-scale name replicas:
   kubectl scale deployment/{{name}} -n {{ns}} --replicas={{replicas}}
 
+# Pausa el clúster (apaga los nodos) sin borrar nada, para liberar RAM
+[group('k8s')]
+k8s-stop:
+  kind get nodes --name {{cluster}} | lines | each {|n| docker stop $n }
+
+# Retoma un clúster pausado, o tras reiniciar Docker o la PC, y espera a que los nodos estén Ready
+[group('k8s')]
+k8s-start:
+  kind get nodes --name {{cluster}} | lines | sort-by {|n| not ($n | str contains "control-plane") } | each {|n| docker start $n }
+  for _ in 1..60 { if ((^kubectl --context kind-{{cluster}} get --raw /readyz | complete).exit_code == 0) { break }; sleep 3sec }
+  kubectl --context kind-{{cluster}} wait --for=condition=Ready node --all --timeout=180s
+
 # Borra el namespace y deja el clúster (la data de Postgres se conserva)
 [group('k8s'), confirm('Esto borra el namespace de la API con todo lo que tiene adentro. ¿Seguir?')]
 k8s-clean:
@@ -168,6 +185,21 @@ k9:
 db-new name:
   "" | save $"migrations/(date now | format date '%Y%m%d%H%M%S')_{{name}}.sql"
 
+# Levanta solo Drizzle Gateway (http://localhost:4983), sin Postgres ni Redis locales. Con `just k8s-pg` abierto ve el clúster.
+[group('datos')]
+db-ui:
+  {{compose}} up -d --no-deps postgres-ui
+
+# Regenera el diagrama ER desde migrations/ y lo sirve en http://localhost:8081
+[group('datos')]
+erd:
+  {{compose}} up -d --build --force-recreate erd
+
+# Carga sql/seed.sql en el Postgres local. Antes tiene que existir el esquema (lo crea la API al arrancar: `just run`). No se puede repetir.
+[group('datos')]
+db-seed:
+  open --raw sql/seed.sql | {{compose}} exec -T postgres sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+
 # Vuelca la DB del compose local a .data/dump.sql
 [group('datos')]
 db-dump:
@@ -181,15 +213,15 @@ db-restore:
 
 # ─── tuneles ────────────────────────────────────────────────────────────────
 
-# Postgres del clúster en localhost:5433 (para el gateway de Drizzle)
+# Postgres del clúster en localhost:5433. El Gateway de Drizzle lo ve como la conexión `cluster`.
 [group('tuneles')]
 k8s-pg:
-  kubectl port-forward -n {{ns}} svc/postgres 5432:5432
+  kubectl port-forward -n {{ns}} svc/postgres 5433:5432
 
 # Redis del clúster en localhost:6380
 [group('tuneles')]
 k8s-redis:
-  kubectl port-forward -n {{ns}} svc/redis 6379:6379
+  kubectl port-forward -n {{ns}} svc/redis 6380:6379
 
 # ─── pruebas ────────────────────────────────────────────────────────────────
 

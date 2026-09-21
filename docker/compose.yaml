@@ -1,15 +1,64 @@
 services:
   postgres-ui:
     image: ghcr.io/drizzle-team/gateway:latest
-    container_name: axum-drizzle
     restart: unless-stopped
     ports:
       - "4983:4983"
     environment:
-      MASTERPASS: ${MASTERPASS:-change-me}
-      DATABASE_URL_app: "postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@host.docker.internal:5432/${POSTGRES_DB:-app}"
+      MASTERPASS: ${MASTERPASS:?definí MASTERPASS en .env}
+      # El Gateway toma estas conexiones solo al crear su volumen (ver README).
+      DATABASE_URL_local: "postgresql://${POSTGRES_USER:?definí POSTGRES_USER en .env}:${POSTGRES_PASSWORD:?definí POSTGRES_PASSWORD en .env}@postgres:5432/${POSTGRES_DB:?definí POSTGRES_DB en .env}"
+      # La DB del clúster, a través del túnel de `just k8s-pg` (puerto 5433 del host).
+      DATABASE_URL_cluster: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@host.docker.internal:5433/${POSTGRES_DB}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - drizzle-data:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Diagrama ER (Liam ERD) generado desde migrations/. Se regenera con `just erd`.
+  erd:
+    build: ./erd
+    restart: unless-stopped
+    ports:
+      - "8081:3000"
+    volumes:
+      - ../migrations:/migrations:ro
+
+  postgres:
+    image: postgres:alpine3.24
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:alpine3.23
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
 volumes:
+  pgdata:
+  redisdata:
   drizzle-data:
