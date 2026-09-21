@@ -62,7 +62,7 @@ build-docker:
 
 # Levanta todo desde cero (el clúster no debe existir)
 [group('k8s')]
-k8s-up: k8s-cluster k8s-namespace k8s-image k8s-metrics k8s-data k8s-api
+k8s-up: k8s-cluster k8s-namespace k8s-image k8s-metrics k8s-apply
 
 # Crea el clúster de kind (1 control-plane + 3 workers)
 [group('k8s')]
@@ -89,23 +89,32 @@ k8s-metrics:
 
 # Crea (o actualiza) los secrets del clúster a partir de .env: no hay contraseñas en los manifiestos
 [group('k8s')]
-k8s-secrets:
+k8s-secrets: k8s-namespace
   kubectl create secret generic postgres-credentials -n {{ns}} $"--from-literal=POSTGRES_USER=($env.POSTGRES_USER)" $"--from-literal=POSTGRES_PASSWORD=($env.POSTGRES_PASSWORD)" $"--from-literal=POSTGRES_DB=($env.POSTGRES_DB)" --dry-run=client -o yaml | kubectl apply -f -
   kubectl create secret generic api-secrets -n {{ns}} $"--from-literal=DATABASE_URL=postgres://($env.POSTGRES_USER):($env.POSTGRES_PASSWORD)@postgres:5432/($env.POSTGRES_DB)" --from-literal=REDIS_URL=redis://redis:6379 --dry-run=client -o yaml | kubectl apply -f -
 
-# Postgres y Redis (los secrets salen de `k8s-secrets`)
+# Aplica todo (base + dev) con Kustomize. Antes crea el namespace y los secrets (`k8s-secrets`), que van fuera de Kustomize.
 [group('k8s')]
-k8s-data: k8s-secrets
-  kubectl apply -n {{ns}} -f {{k8s}}/dev/postgres.yaml -f {{k8s}}/dev/redis.yaml
+k8s-apply: k8s-secrets
+  kubectl apply -k {{k8s}}/dev
 
-# La API: config, deployment, service, PDB, HPA y el NodePort de dev
+# Muestra el YAML final que arma Kustomize, sin aplicar nada
 [group('k8s')]
-k8s-api:
-  kubectl apply -n {{ns}} -f {{k8s}}/base/configmap.yaml -f {{k8s}}/base/deployment.yaml -f {{k8s}}/base/service.yaml -f {{k8s}}/base/pdb.yaml -f {{k8s}}/base/hpa.yaml -f {{k8s}}/dev/api-port.yaml
+k8s-render:
+  kubectl kustomize {{k8s}}/dev
+
+# Valida contra el servidor lo que aplicaría, sin cambiar nada (el namespace tiene que existir)
+[group('k8s')]
+k8s-check:
+  kubectl apply -k {{k8s}}/dev --dry-run=server
 
 # Reconstruye la imagen, la carga y reinicia la API (ciclo de desarrollo)
 [group('k8s')]
-k8s-redeploy: k8s-image
+k8s-redeploy: k8s-image k8s-restart
+
+# Reinicia la API sin reconstruir la imagen (por ejemplo, tras cambiar los secrets con `k8s-secrets`)
+[group('k8s')]
+k8s-restart:
   kubectl rollout restart deployment/api -n {{ns}}
   kubectl rollout status deployment/api -n {{ns}}
 
