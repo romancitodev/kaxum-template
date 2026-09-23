@@ -1,239 +1,229 @@
-# bdd-sys
+# 🦀 `Rust API` ⚓ · ☸️ Kubernetes-ready
 
-API en Rust (axum) con PostgreSQL y Redis, lista para correr en local con Docker o en un clúster de Kubernetes (kind).
+API written in Rust with Axum, PostgreSQL, Redis, and Kubernetes support.
 
-Por ahora solo expone los endpoints de salud (y, opcionalmente, métricas de Prometheus); sirve de base para construir el resto.
+A ready-to-use template for building RESTful APIs in Rust, with project structure, local development, Docker, Kubernetes, observability, database migrations, and testing already set up.
 
-## Qué tiene
+This project is a template for building a **RESTful API** in Rust without the boilerplate of setting up the project structure and the support for kubernetes.
 
-| Pieza | Qué hace |
-|-------|----------|
-| `src/main.rs` | Arranca el servidor, CORS abierto, trazas HTTP y apagado ordenado (Ctrl+C / SIGTERM). Con la feature `metrics` activa, arranca además un segundo servidor con `/metrics`. |
-| `src/config.rs` | Lee las variables de entorno en un solo lugar (`Config::from_env`). |
-| `src/error.rs` | `AppError`: los handlers devuelven `Result<_, AppError>` y pueden usar `?` con cualquier error (500 con log) o `AppError::BadRequest` (400). |
-| `src/app.rs` | Estado compartido: pool de Postgres (`sqlx`), conexión a Redis y migraciones al arrancar. |
-| `src/routes/health.rs` | `GET /health/live`, `/health/ready` y `/health/startup`. |
-| `src/routes/example.rs` | Ruta de ejemplo `GET /api/example/{name}` con sus tests. Copiarla como punto de partida y borrarla. |
-| `src/routes/metrics.rs` | Solo con la feature `metrics`: instala el exporter de Prometheus, expone `GET /metrics` en un servidor aparte (`METRICS_ADDR`) y el middleware que mide cada request. Ver [Métricas y Prometheus](#métricas-y-prometheus). |
-| `src/monitor/redis.rs` | Heartbeat en background (PING cada 5 s) que guarda si Redis está arriba o caído. |
-| `migrations/` | El esquema: migraciones de sqlx (`<timestamp>_<nombre>.sql`), hoy el del zoológico. La API las aplica al arrancar; `build.rs` hace que cargo las detecte. Sin `BEGIN`/`COMMIT`: sqlx ya abre la transacción. |
-| `sql/seed.sql` | Datos de ejemplo del zoológico. Se cargan con `just db-seed` una vez creado el esquema. Borrar en un proyecto nuevo. |
-| `docker/` | `compose.yaml` (Postgres, Redis, Drizzle Gateway y el diagrama ER) y `erd/` (imagen de Liam ERD). |
-| `kubernetes/base/` | Manifiestos de la API: namespace, configmap, deployment, service, PDB, HPA y el `kustomization.yaml` que los agrupa. |
-| `kubernetes/dev/` | Extras solo para desarrollo: Postgres, Redis, NodePort y su propio `kustomization.yaml` (incluye `../base`). Los secrets no son un manifiesto: los crea `just k8s-secrets` desde `.env`. |
-| `kubernetes/observability/` | Values del chart `kube-prometheus-stack` (Prometheus + Grafana) para kind, y el `PodMonitor` que registra la API. Se instala aparte con `just obs-up`, no forma parte de Kustomize. |
+# 📚 Content
+1. [Project Structure](#-project-structure)
+2. [Health Checks](#-health-checks)
+3. [Configuration and Environment Variables](#-configuration-and-environment-variables)
+4. [Justfile Commands](#-justfile-commands)
+5. [Postgres Persistence in the Cluster](#-postgres-persistence-in-the-cluster)
+6. [Workflow](#-workflow)
+7. [Using as a Template](#-using-as-a-template)
+8. [Drizzle Gateway](#-drizzle-gateway-httplocalhost4983)
+9. [ER Diagram](#-er-diagram-httplocalhost8081)
+10. [Metrics and Prometheus](#-metrics-and-prometheus)
+11. [Sample Data (Zoo)](#-sample-data-zoo)
+12. [Tests with Postgres](#-tests-with-postgres)
 
-### Health checks
-
-- `live`: el proceso está vivo, no toca dependencias.
-- `startup`: la app ya inicializó.
-- `ready`: hace `SELECT 1` a Postgres (si falla, 503). Redis es opcional: si está caído responde 200 y lo marca como degradado.
-
-### Variables de entorno (`.env`)
-
-`cp .env.example .env` y cambiar las contraseñas. Es la única fuente de credenciales: las lee el justfile, el compose (`--env-file`) y la API, y `just k8s-secrets` arma con ellas los secrets del clúster.
-
-- `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` y `MASTERPASS` (Drizzle Gateway): obligatorias. Sin ellas `just up` falla con un mensaje.
-- `DATABASE_URL` y `REDIS_URL`: obligatorias para correr la API en local.
-- `BIND_ADDR` (por defecto `0.0.0.0:3000`) y `RUST_LOG`: opcionales.
-- `METRICS_ADDR` (por defecto `127.0.0.1:9090`): opcional, solo se lee con la feature `metrics` activa.
-
-Postgres toma la contraseña solo al crear su data. Si la cambiás después, no se aplica sola: hay que borrar la data (`just down` en local, `just k8s-wipe-data` en el clúster) o cambiarla con `ALTER USER`.
-
-## Justfile
-
-Requiere [`just`](https://github.com/casey/just) y `nu` (nushell) como shell. El nombre del proyecto (clúster de kind, proyecto de compose y carpeta de data) sale del `name` de `Cargo.toml`. Con `just` a secas se listan las recetas agrupadas (los grupos de abajo son los mismos que muestra la lista).
-
-- Las recetas marcadas con ⚠ piden confirmación antes de correr. `just --yes <receta>` la omite.
-- Alias: `ship` (`k8s-ship`), `logs` (`k8s-logs`) y `status` (`k8s-status`).
-- Tienen parámetro opcional `app` (por defecto `api`): `k8s-logs` y `k8s-nodes`, ej. `just logs postgres`.
-
-### `local`
-
-| Receta | Qué hace |
-|--------|----------|
-| `doctor` | Verifica que estén instaladas las herramientas que usa el justfile. |
-| `up` | Levanta el docker compose (Postgres, Redis, Drizzle Gateway y el diagrama ER). |
-| `stop` | Pausa el docker compose sin borrar nada (se retoma con `up`). |
-| `down` ⚠ | Baja el docker compose y borra sus volúmenes. |
-| `run` | Corre la API en local con `cargo pretty run`. Sin la feature `metrics` (correr `cargo run --features metrics` a mano si querés probarla). |
-| `test` | Corre los tests. Los que usan Postgres necesitan `just up` y corren en bases temporales: no tocan tu base. |
-| `build-docker` | Construye la imagen `api:dev` (siempre con la feature `metrics`, ver `Dockerfile`). |
-
-### `k8s`
-
-| Receta | Qué hace |
-|--------|----------|
-| `k8s-up` | Levanta todo desde cero en kind (el clúster no debe existir). |
-| `k8s-cluster` | Crea el clúster kind (1 control-plane + 3 workers). |
-| `k8s-namespace` | Crea el namespace `app` y lo deja por defecto. |
-| `k8s-image` | Construye la imagen y la carga en los nodos de kind. |
-| `k8s-metrics` | Instala metrics-server (lo necesita el HPA; no confundir con las métricas de Prometheus de la API). |
-| `k8s-secrets` | Crea o actualiza los secrets del clúster desde `.env` (contraseñas de Postgres y `DATABASE_URL`/`REDIS_URL` de la API). |
-| `k8s-apply` | Aplica todo (base + dev) con Kustomize: configmap, deployment, service, PDB, HPA, Postgres, Redis y el NodePort. Antes corre `k8s-secrets`. |
-| `k8s-render` | Muestra el YAML final que arma Kustomize, sin aplicar nada. |
-| `k8s-check` | Valida contra el servidor lo que se aplicaría, sin cambiar nada (el namespace tiene que existir). |
-| `k8s-redeploy` | Reconstruye la imagen y reinicia la API (ciclo de desarrollo). |
-| `k8s-restart` | Reinicia la API sin reconstruir la imagen (por ejemplo, tras cambiar los secrets con `k8s-secrets`). |
-| `k8s-ship` | `k8s-redeploy` + `health`: actualiza la API y la prueba. |
-| `k8s-scale <name> <n>` | Cambia las réplicas de un Deployment, ej. `just k8s-scale redis 0`. |
-| `k8s-stop` | Pausa el clúster (apaga los nodos) sin borrar nada, para liberar RAM. |
-| `k8s-start` | Retoma un clúster pausado, o tras reiniciar Docker o la PC, y espera a que los nodos estén Ready. |
-| `k8s-clean` ⚠ | Borra el namespace, deja el clúster. La data de Postgres se conserva. |
-| `k8s-destroy` ⚠ | Borra el clúster entero. La data de Postgres se conserva. |
-| `k8s-wipe-data` ⚠ | Borra la data de Postgres. Es la única receta que lo hace. |
-
-### `inspeccion`
-
-| Receta | Qué hace |
-|--------|----------|
-| `k8s-status` | Vista general del namespace. |
-| `k8s-nodes [app]` | En qué nodo está cada pod (por defecto los de la API). |
-| `k8s-logs [app]` | Logs en vivo de todos los pods de una app (por defecto la API). |
-| `k8s-top` | CPU y memoria por pod. |
-| `k8s-hpa` | HPA en vivo. |
-| `k9` | Abre k9s en el namespace. |
-
-### `obs` (observabilidad)
-
-Prometheus + Grafana viven en el namespace `monitoring`, aparte de `app` y de Kustomize. Necesitan la feature `metrics` compilada en la imagen (la imagen de `just build-docker` ya la trae).
-
-| Receta | Qué hace |
-|--------|----------|
-| `obs-up` | Instala (o actualiza) el stack `kube-prometheus-stack` vía Helm. Tarda varios minutos la primera vez. |
-| `obs-grafana` | Túnel a Grafana: `http://127.0.0.1:3000` (usuario y contraseña `admin`, solo para desarrollo). |
-| `obs-prometheus` | Túnel a Prometheus: `http://127.0.0.1:9090`. |
-| `obs-status` | Pods del stack de observabilidad. |
-| `obs-podmonitor` | Registra la API en Prometheus (`PodMonitor`). Necesita `obs-up` y `k8s-apply` hechos antes. |
-| `api-metrics` | Túnel al `/metrics` crudo de un pod de la API: `http://127.0.0.1:9091/metrics`. |
-| `obs-down` ⚠ | Desinstala Prometheus y Grafana (se pierden los datos guardados; los CRDs quedan en el clúster). |
-
-### `datos`
-
-| Receta | Qué hace |
-|--------|----------|
-| `db-new <nombre>` | Crea una migración vacía en `migrations/`, ej. `just db-new crear_usuarios`. La API la aplica al arrancar. |
-| `db-ui` | Levanta solo Drizzle Gateway, sin Postgres ni Redis locales. Con `just k8s-pg` abierto ve el clúster. |
-| `erd` | Regenera el diagrama ER desde `migrations/` y lo sirve en `http://localhost:8081`. |
-| `db-seed` | Carga `sql/seed.sql` en el Postgres local. Antes tiene que existir el esquema (`just run`). No se puede repetir. |
-| `db-dump` | Vuelca el Postgres del compose local a `.data/dump.sql`. |
-| `db-restore` ⚠ | Carga `.data/dump.sql` en el Postgres del clúster (reemplaza las tablas del dump). Se puede repetir. |
-
-### `tuneles`
-
-| Receta | Qué hace |
-|--------|----------|
-| `k8s-pg` | Postgres del clúster en `localhost:5433`. El Gateway de Drizzle lo ve como la conexión `cluster`. |
-| `k8s-redis` | Redis del clúster en `localhost:6380`. |
-
-### `pruebas`
-
-| Receta | Qué hace |
-|--------|----------|
-| `health` | Pega a `/health/ready` por el NodePort (`127.0.0.1:8080`). |
-| `load-soft` | Carga suave con `oha`: 300 req/s durante 1 minuto. |
-| `load-hard` | Carga fuerte: satura la CPU y el HPA escala hasta el máximo. |
-
-## Persistencia de Postgres en el clúster
-
-La data vive en `/var/lib/kind-<proyecto>-pg`, dentro de la VM de Docker, montada en el worker con la etiqueta `data=pg` (ver `kubernetes/kind.config.yaml`). Por eso sobrevive a `k8s-clean`, `k8s-destroy` y a recrear el clúster. Solo `just k8s-wipe-data` la borra.
-
-No se usa una carpeta de Windows (`L:\...`) porque Postgres falla ahí con `Permission denied` en `pg_wal`.
-
-Un clúster creado antes de este cambio no tiene el montaje, la etiqueta ni los nombres nuevos: hay que borrarlo (`kind delete cluster --name axum`) y hacer `just k8s-up` una vez.
-
-## Flujo de trabajo
-
-Dos entornos: **local** (la API corre con `cargo` contra el compose) y **clúster** (la API corre en kind, como en producción).
-
-### Primera vez
-
+## 🏗️ Project Structure
 ```
+.
+├── docker
+│   └── erd
+├── kubernetes
+│   ├── base
+│   ├── dev
+│   └── observability
+├── migrations
+├── sql
+└── src
+    ├── monitor
+    └── routes
+```
+
+## 💓 Health Checks
+- `live`: checks that the API is alive.
+- `startup`: checks that the API has started successfully.
+- `ready`: checks the Postgres and Redis connections.
+
+> [!WARNING]
+> `/health/ready` returns `503` if Postgres is unavailable, or `200 (redis degraded)` if Redis is unavailable.
+
+## ⚙️ Configuration and Environment Variables
+The project has a `.env.example` present, so you can copy it to `.env` and set the values for your environment.
+
+```bash
 cp .env.example .env
-just doctor      # ¿están instaladas las herramientas?
-just up          # Postgres, Redis y Drizzle Gateway en Docker
-just k8s-up      # clúster completo en kind
 ```
 
-### Casos de uso
+| Key | Description | Context |
+|-----|-------------|---------|
+| `POSTGRES_USER`* | Postgres User | Postgres & Drizzle Gateway |
+| `POSTGRES_PASSWORD`* | Postgres Password | Postgres & Drizzle Gateway |
+| `POSTGRES_DB`* | Postgres Database | Postgres & Drizzle Gateway |
+| `MASTERPASS`* | Master Password | Drizzle Gateway |
+| `DATABASE_URL` | Database Connection | Postgres & Drizzle Gateway |
+| `REDIS_URL` | Redis connection | Redis |
+| `BIND_ADDR` | API bind address | API |
+| `METRICS_ADDR` | Metrics bind address | API (metrics) |
+| `RUST_LOG` | Rust log level | API |
 
-| Situación | Comando |
+> [!NOTE]
+> **\***: Required to start up the app
+
+## 🤖 Justfile commands
+This project requires the [`just`](https://github.com/casey/just) and `nu` shell to run the commands.
+
+### 🛠️ Local Commands
+| Command | Description |
+|---------|-------------|
+| `up` | Starts the API and the dependencies (Postgres and Redis) in a local environment with `docker compose`. |
+| `down` | Stops the API and the dependencies (Postgres and Redis) in a local environment with `docker compose`. |
+| `stop` | Stops the containers without deleting data |
+| `doctor` | Checks if the required tools are installed. |
+| `run` | Runs the API in local with `cargo pretty run`. Without the `metrics` feature (run `cargo run --features metrics` manually if you want to test it). |
+| `test` | Runs the tests. The ones that use Postgres need `just up` and run in temporary databases: they don't touch your database. |
+| `build-docker` | Builds the `api:dev` image (always with the `metrics` feature, see `Dockerfile`). |
+
+### ☸️ Kubernetes Commands.
+| Command | Description |
+|---------|-------------|
+| `k8s-cluster` | Creates the kind cluster (1 control-plane + 3 workers). |
+| `k8s-up` | Starts up from zero (the cluster MUST do not exist before). |
+| `k8s-start` | Resumes a paused cluster, or after restarting Docker or the PC, and waits for the nodes to be Ready. |
+| `k8s-stop` | Pauses the cluster (stops the nodes) without deleting anything, to free RAM. |
+| `k8s-image` | Builds the image and loads it into the kind nodes. |
+| `k8s-redeploy` | Rebuilds the image and restarts the API (development cycle). |
+| `k8s-restart` | Restarts the API without rebuilding the image (for example, after changing the secrets with `k8s-secrets`). |
+| `k8s-ship` | `k8s-redeploy` + `health`: updates the API and tests it. |
+| `k8s-secrets` | Creates or updates the cluster secrets from `.env` (Postgres passwords and `DATABASE_URL`/`REDIS_URL` for the API). |
+| `k8s-apply` | Applies everything (base + dev) with Kustomize. |
+| `k8s-scale <name> <n>` | Changes the replicas of a Deployment, e.g. `just k8s-scale redis 0`. |
+| `k8s-render` | Shows the final YAML that Kustomize generates, without applying anything. |
+| `k8s-check` | Validates against the server what would be applied, without changing anything (the namespace must exist). |
+| `k8s-metrics` | Installs metrics-server (needed for HPA; not to be confused with the Prometheus metrics of the API). |
+| `k8s-namespace` | Creates the `app` namespace and sets it as default. |
+| `k8s-clean` ⚠ | Deletes the namespace, leaves the cluster. Postgres data is preserved. |
+| `k8s-destroy` ⚠ | Deletes the entire cluster. Postgres data is preserved. |
+| `k8s-wipe-data` ⚠ | Deletes the Postgres data. It's the only command that does it. |
+
+### 🔍 Inspection / Debugging Commands
+| Command | Description |
+|---------|-------------|
+| `k8s-status` | Overview of the namespace. |
+| `k8s-nodes [app]` | Which node each pod is on (default the API). |
+| `k8s-logs [app]` | Live logs of all pods of an app (default the API). |
+| `k8s-top` | CPU and memory per pod. |
+| `k8s-hpa` | Live HPA. |
+| `k9` | Opens k9s in the namespace. |
+
+### 🔭 Observability Commands
+| Command | Description |
+|---------|-------------|
+| `obs-up` | Installs / Updates the `kube-prometheus-stack` via Helm. |
+| `obs-down` | Removes Prometheus & Grafana (the data get lost) |
+| `obs-grafana` | Tunnel to Grafana. |
+| `obs-prometheus` | Tunnel to Prometheus. |
+| `obs-status` | Pods of the observability stack. |
+| `obs-podmonitor` | Registers the API in Prometheus (`PodMonitor`). Needs `obs-up` and `k8s-apply` done before. |
+| `api-metrics` | Tunnel to the raw `/metrics` of an API pod. |
+
+### 🗄️ Data Commands
+| Command | Description |
+|---------|-------------|
+| `db-new <name>` | Creates an empty migration in `migrations/`. Applied by the API on startup. |
+| `db-ui` | Starts only Drizzle Gateway, no local Postgres/Redis. Pair with `k8s-pg` to see the cluster. |
+| `erd` | Regenerates the ER diagram from `migrations/`, served at `http://localhost:8081`. |
+| `db-seed` | Loads `sql/seed.sql`. Schema has to exist already (`just run`). Can't run twice. |
+| `db-dump` | Dumps the local compose Postgres to `.data/dump.sql`. |
+| `db-restore` ⚠ | Loads `.data/dump.sql` into the cluster Postgres, replaces its tables. Repeatable. |
+
+### 🚇 Tunnel Commands
+| Command | Description |
+|---------|-------------|
+| `k8s-pg` | Cluster Postgres on `localhost:5433`. |
+| `k8s-redis` | Cluster Redis on `localhost:6380`. |
+
+### 🧪 Testing Commands
+| Command | Description |
+|---------|-------------|
+| `health` | Hits `/health/ready` through the NodePort, `127.0.0.1:8080`. |
+| `load-soft` | `oha`, 300 req/s for 1 minute. |
+| `load-hard` | Saturates the CPU, HPA scales to max. |
+
+## 💾 Postgres Persistence in the Cluster
+Data lives at `/var/lib/kind-<project>-pg`, inside the Docker VM, mounted on the worker labeled `data=pg` (`kubernetes/kind.config.yaml`). Survives `k8s-clean`, `k8s-destroy`, and recreating the cluster. Only `k8s-wipe-data` touches it.
+
+Cluster from before this setup won't have the mount, the label or the names. Delete it (`kind delete cluster --name axum`) and run `k8s-up` once.
+
+## 🔄 Workflow
+Local: API runs with `cargo` against compose. Cluster: API runs in kind.
+
+```bash
+cp .env.example .env
+just doctor
+just up
+just k8s-up
+```
+
+| Situation | Command |
 |-----------|---------|
-| Estoy escribiendo la API | `just up` una vez, después `just run` (se reinicia a mano con Ctrl+C y `just run`). |
-| Actualicé la API y quiero verla en el clúster | `just ship` (construye, carga, reinicia y prueba `/health/ready`). |
-| Lo mismo pero sin la prueba | `just k8s-redeploy`. |
-| Cambié un manifiesto de la API, de Postgres, Redis o el secret | `just k8s-apply` (Kustomize aplica base + dev en un solo paso). |
-| Quiero ver qué aplicaría Kustomize antes de tocar el clúster | `just k8s-render` (YAML final) o `just k8s-check` (dry-run contra el servidor). |
-| Necesito una tabla o un cambio de esquema | `just db-new <nombre>`, escribir el SQL en el archivo creado y reiniciar la API (`just run` o `just ship`). |
-| Quiero llevar mi data local al clúster | `just db-dump` y después `just db-restore`. |
-| Quiero ver la DB del clúster con Drizzle Gateway | `just k8s-pg` y conectar a `localhost:5433`. |
-| Quiero ver las métricas de la API en Grafana | `just obs-up`, `just obs-podmonitor` (con `k8s-apply` ya hecho) y `just obs-grafana`. |
-| Quiero ver el `/metrics` crudo de un pod, sin Grafana | `just api-metrics` y abrir `http://127.0.0.1:9091/metrics`. |
-| Algo falla en el clúster | `just status`, `just logs` (o `just logs postgres`), o `just k9`. |
-| Probar que el HPA escala | `just k8s-hpa` en una terminal y `just load-hard` en otra. |
-| Probar que Redis es opcional | `just k8s-scale redis 0` y `just health`: responde 200 con `degraded`. |
-| Probar que Postgres es obligatorio | `just k8s-scale postgres 0` y `just health`: responde 503. |
-| Terminé por hoy | `just stop` y `just k8s-stop`: pausan todo sin borrar nada. |
-| Al día siguiente | `just up` y `just k8s-start` (también sirve tras reiniciar Docker o la PC). |
-| Quiero borrar todo | `just down` (borra los datos locales del compose) y `just k8s-destroy` (la data del clúster queda). |
-| Quiero empezar con la DB del clúster vacía | `just k8s-wipe-data`, y después `just k8s-apply`. |
+| Writing the API | `just up` once, then `just run`. |
+| Updated the API, want it in the cluster | `just ship`. |
+| Same, no test | `just k8s-redeploy`. |
+| Changed a manifest | `just k8s-apply`. |
+| Preview before applying | `k8s-render` (YAML) or `k8s-check` (dry-run). |
+| New table or schema change | `db-new <name>`, write the SQL, restart the API. |
+| Move local data to the cluster | `db-dump` then `db-restore`. |
+| Something's broken | `status`, `logs [app]`, `k9`. |
+| Check the HPA scales | `k8s-hpa` in one terminal, `load-hard` in another. |
+| Check Redis is optional | `k8s-scale redis 0`, `health` → 200 degraded. |
+| Check Postgres is required | `k8s-scale postgres 0`, `health` → 503. |
+| Done for the day | `stop` + `k8s-stop`. |
+| Back the next day | `up` + `k8s-start`. |
+| Nuke everything | `down` (local data gone) + `k8s-destroy` (cluster data stays). |
 
-## Usar como template
+## 📋 Using as a Template
+1. Rename `name` in `Cargo.toml`, run `cargo check`. Justfile, cluster, compose and data folder follow it.
+2. Delete `sql/seed.sql` and the initial schema migration, write your own with `db-new`. ER diagram needs at least one migration.
+3. Change the passwords in `.env`, delete `src/routes/example.rs` once you have real routes.
+4. Not using Prometheus? Drop `metrics` from `Cargo.toml`, `Dockerfile`, the `metrics` port in `kubernetes/base/deployment.yaml`, delete `kubernetes/observability/`. Leaving it in costs nothing, it's opt-in.
 
-1. Cambiar el `name` en `Cargo.toml` y correr `cargo check` (actualiza `Cargo.lock`). El justfile, el clúster, el compose y la carpeta de data siguen ese nombre solos.
-2. Borrar `sql/seed.sql` y la migración `..._esquema_inicial.sql`, y escribir el esquema propio con `just db-new`. El diagrama ER necesita al menos una migración.
-3. Cambiar las contraseñas en `.env` y borrar `src/routes/example.rs` cuando ya tengas rutas propias.
-4. Si no vas a usar Prometheus, sacar la feature `metrics` de `Cargo.toml`, `Dockerfile` (`--features metrics`), `kubernetes/base/deployment.yaml` (puerto `metrics`) y borrar `kubernetes/observability/`. Si la dejás, no molesta: solo se activa a propósito.
+Host port `8080` is fixed (`kubernetes/kind.config.yaml`, justfile `url`). Two clusters from different projects can't run at once.
 
-El puerto `8080` del host (en `kubernetes/kind.config.yaml` y `url` del justfile) es fijo: dos clústeres de proyectos distintos no pueden estar arriba a la vez.
+## 🌳 Drizzle Gateway (`http://localhost:4983`)
+Two connections: `local` (compose Postgres) and `cluster` (needs `k8s-pg` running or it won't answer). Tunnel uses `5433` instead of `5432` so both can be up together.
 
-## Drizzle Gateway (`http://localhost:4983`)
+Gateway reads `DATABASE_URL_*` only when it creates its volume. Had the volume from before? `cluster` won't show up. Add it by hand from the UI (`postgresql://<user>:<password>@host.docker.internal:5433/<db>`), or recreate the volume (only holds Gateway config, no Postgres data):
 
-Muestra dos conexiones: `local` (el Postgres del compose) y `cluster` (el del clúster). Para ver la del clúster hay que tener abierto `just k8s-pg`; sin el túnel esa conexión no responde. El puerto 5433 del túnel es distinto del 5432 del compose para que puedan estar los dos a la vez.
-
-El Gateway toma las conexiones de las variables `DATABASE_URL_*` solo cuando crea su volumen. Si ya tenías el volumen de antes, `cluster` no aparece: agregala una vez desde la interfaz del Gateway (`postgresql://<usuario>:<contraseña>@host.docker.internal:5433/<base>`) o recreá el volumen (solo guarda la configuración del Gateway, no datos de Postgres):
-
-```
-docker compose -p <proyecto> -f docker/compose.yaml rm -sf postgres-ui
-docker volume rm <proyecto>_drizzle-data
+```bash
+docker compose -p <project> -f docker/compose.yaml rm -sf postgres-ui
+docker volume rm <project>_drizzle-data
 just up
 ```
 
-Para mirar solo la data del clúster, sin levantar el Postgres ni el Redis locales: `just db-ui` en una terminal y `just k8s-pg` en otra.
+## 📊 ER Diagram (`http://localhost:8081`)
+[Liam ERD](https://liambx.com) reads `migrations/` in order, `erd` compose service serves it (starts with `just up`). Run `just erd` after changing a migration.
 
-## Diagrama ER (`http://localhost:8081`)
+## 📈 Metrics and Prometheus
+`metrics` Cargo feature, off by default. `build-docker` always compiles it; locally you ask for it: `cargo run --features metrics`.
 
-Lo genera [Liam ERD](https://liambx.com) desde `migrations/` (junta todas en orden) y lo sirve el servicio `erd` del compose (arranca con `just up`). Después de agregar o cambiar una migración, `just erd` lo regenera.
+With it on, `main.rs` opens a second HTTP server on `METRICS_ADDR` (`127.0.0.1:9090` local, `0.0.0.0:9090` in the cluster via configmap), one route:
 
-## Métricas y Prometheus
+- `GET /metrics`: `http_requests_total`, `http_request_duration_seconds`, `http_requests_in_flight` from the `routes::metrics::track` middleware, plus `db_pool_connections`/`db_pool_max_connections` from the sqlx pool. `redis_up` and `redis_heartbeat_failures_total` are declared but not wired to `src/monitor/redis.rs` yet.
 
-La feature de Cargo `metrics` (`default = []`, o sea apagada por defecto) agrega un exporter de Prometheus a modo de ejemplo. `just build-docker` (y por lo tanto todo lo que corre en el clúster) siempre la compila; para probarla en local hay que pedirla a mano: `cargo run --features metrics`.
-
-Con la feature activa, `main.rs` levanta un **segundo** servidor HTTP en `METRICS_ADDR` (por defecto `127.0.0.1:9090`; en el clúster el configmap lo pone en `0.0.0.0:9090`, puerto `metrics` del deployment) con un solo endpoint:
-
-- `GET /metrics`: expone en formato Prometheus `http_requests_total`, `http_request_duration_seconds` (con buckets pensados para requests rápidos) y `http_requests_in_flight`, medidos por un middleware (`routes::metrics::track`) sobre todas las rutas; y `db_pool_connections`/`db_pool_max_connections`, calculados en cada scrape contra el pool de sqlx. `redis_up` y `redis_heartbeat_failures_total` están declaradas para conectarlas al heartbeat de `src/monitor/redis.rs`.
-
-En el clúster, `kubernetes/observability/` trae los `values` del chart `kube-prometheus-stack` (Prometheus + Grafana) ajustados para kind, y `api-podmonitor.yaml` (`PodMonitor`) para que Prometheus scrapee el puerto `metrics` de los pods de la API. Todo esto se instala aparte de la app, con las recetas del grupo `obs` del justfile:
-
-```
-just k8s-up          # o k8s-apply, si el clúster ya existe
-just obs-up          # Prometheus + Grafana en el namespace `monitoring`
-just obs-podmonitor  # registra la API para que Prometheus la scrapee
-just obs-grafana     # túnel a http://127.0.0.1:3000 (admin / admin)
+```bash
+just k8s-up          # or k8s-apply if the cluster exists
+just obs-up
+just obs-podmonitor
+just obs-grafana      # http://127.0.0.1:3000, admin/admin
 ```
 
-## Datos de ejemplo (zoológico)
+## 🦁 Sample Data (Zoo)
+Schema comes from the API on startup. Data doesn't, you seed it yourself.
 
-El esquema lo crea la API al arrancar (es la migración de `migrations/`) y los datos no se cargan solos: hay que cargar el seed aparte.
-
-```
+```bash
 just up
-just run        # crea el esquema; Ctrl+C cuando termine de iniciar
-just db-seed    # carga sql/seed.sql
+just run        # Ctrl+C once it's up
+just db-seed
 ```
 
-El seed no se puede cargar dos veces (da `duplicate key` y no deja nada a medias). Para empezar de nuevo: `just down`, `just up`, `just run` y `just db-seed`.
+Seed can't run twice (`duplicate key`, no partial state). Start over: `down`, `up`, `run`, `db-seed`.
 
-## Tests con Postgres
-
-`#[sqlx::test]` crea una base temporal por test, le aplica `migrations/` y la borra al terminar (ejemplo en `src/routes/health.rs`). `just test` apunta a la base `postgres` del compose para no dejar nada en la tuya.
+## 🧫 Tests with Postgres
+`#[sqlx::test]` spins up a temp database per test, runs `migrations/`, drops it (see `src/routes/health.rs`). `just test` points at compose's `postgres` database, yours stays clean.
